@@ -1,0 +1,172 @@
+---
+title: "PM_Coursera_Project"
+author: "Sean"
+date: "October 9, 2018"
+output: html_document
+---
+#Introduction
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how **much** of a particular activity they do, but they rarely quantify *how well they do it*. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: 
+[HAR Data](http://groupware.les.inf.puc-rio.br/har)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load Necessary Packages
+```{r message = FALSE}
+library(knitr)
+library(formatR)
+library(tinytex)
+library(plyr)
+library(AppliedPredictiveModeling)
+library(caret)
+library(Hmisc)
+library(randomForest)
+```
+
+#Download and Load the Training and Test Sets
+(*If the data have been downloaded manually, skip this step*)
+```{r message = FALSE}
+setwd(paste0("E:/Courses/Coursera/John_Hopkins_University_Data_Science",
+          "/8_Practical_Machine_learning/Week 4/Project"))
+#Download Training Sets
+if(!file.exists("Training_Set.csv")){
+    fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(fileURL, "Training_Set.csv", mode="wb")
+}else{
+    print("Data was already downloaded")
+}
+
+#Download Test Sets
+if(!file.exists("Test_Set.csv")){
+    fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(fileURL, "Test_Set.csv", mode="wb")
+}else{
+    print("Data was already downloaded")
+}
+
+```
+
+#Training Set Analysis
+```{r}
+training <- read.csv("Training_Set.csv")
+
+#Data Cleaning
+
+New_Colname <- colnames(training)
+NA_Percent <- function(columnname){
+        Useful_Col <- training[, c(columnname)]
+        Count_Empty <- length(Useful_Col[(is.na(Useful_Col))|(Useful_Col == "")])
+        Nonuseful_Percent <- round(Count_Empty/nrow(training)*100, 2)
+        data.frame(Column = columnname, Empty_Percent = Nonuseful_Percent)
+}
+
+Useful_Count <- ldply(New_Colname, NA_Percent)
+
+Column_Keep <- as.character(Useful_Count$Column[Useful_Count$Empty_Percent < 10])
+
+New_training <- training[, Column_Keep]
+```
+
+Now we need to explore if `cvtd_timestamp`, `user_name` and index in new training dataset need to be further trimed and if training set will need to be split into equal time sets.
+
+## What is the relationship between time and exercise
+
+```{r}
+ggplot(New_training,
+       aes(x = cvtd_timestamp,
+           y = roll_belt,
+           color = classe)) +
+        geom_point() +
+        theme_classic() +
+        theme(axis.text.x = element_text(angle = 45,
+                                         hjust = 1))
+```
+
+Apparently, exercises were performed sequentially. __Time__ is highly associated with exercises and should __not__ be included in the model.
+
+## What is the relationship between user and time
+
+```{r}
+ggplot(New_training,
+       aes(x = cvtd_timestamp,
+           y = roll_belt,
+           color = user_name)) +
+        geom_point() +
+        theme_classic() +
+        theme(axis.text.x = element_text(angle = 45,
+                                         hjust = 1))
+```
+
+This figure indicates that time is also highly associated with user, therefore it should be excluded from the model also.
+
+#Model Selection
+
+Since several variables are bimodal distribution, we could use a tree based model. Also, since the initial exploratory analysis with a simple decision tree suggested that dataset is not sufficient to conduct such analysis, thus, random forest is chosen.
+
+```{r}
+New_training_Remove <- New_training[, !(colnames(New_training) %in% c("X", 
+                                                                      "user_name", 
+                                                                      "raw_timestamp_part_1", 
+                                                                      "raw_timestamp_part_2", 
+                                                                      "cvtd_timestamp", 
+                                                                      "new_window", 
+                                                                      "num_window"))]
+
+#Split training data into training and test set for cross-validation
+set.seed(123)
+Train <- createDataPartition(New_training_Remove$classe,
+                             p = 0.6,
+                             list = FALSE)
+Train_training <- New_training_Remove[Train, ]
+Train_test <- New_training_Remove[-Train, ]
+
+#Generate the model
+if(file.exists("RF_Model.RData")){
+        load("RF_Model.RData")
+}else{
+        print("No model, generate new one")
+        set.seed(1337)
+        ModelFit <- train(classe~., 
+                          method = "rf",
+                          data = Train_training,
+                          preProcess = c("center",
+                                         "scale"))
+        save(ModelFit, file = "RF_Model.RData")
+}
+
+Predict_Test <- predict(ModelFit, newdata = Train_test)
+confusionMatrix(Predict_Test, Train_test$classe)
+```
+
+#Summary
+
+The random forest model predicts 99.32% out of sample accuracy. The result is almost the same to [HAR Dataset](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises) that has a 99.41% accuracy. The model will then be applied to the 20 samples for test set.
+
+#Model Testing
+```{r}
+model_test <- read.csv("Test_Set.csv")
+model_test <- model_test[, colnames(model_test) %in% colnames(New_training_Remove)]
+
+model_test_pred <- as.character(predict(ModelFit, 
+                                        newdata = model_test))
+```
+
+The outputs will be saved as individual files
+```{r}
+pml_write_files <- function(x){
+        n = length(x)
+        for (i in 1:n){
+                filename = paste0("./problem_id_", i, ".txt")
+                write.table(x[i],
+                            file = filename,
+                            quote = FALSE,
+                            row.names = FALSE,
+                            col.names = FALSE)
+        }
+}
+
+pml_write_files(model_test_pred)
+```
+
